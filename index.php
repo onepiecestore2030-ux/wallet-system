@@ -16,19 +16,13 @@ session_start();
 require_once 'includes/db.php'; // يجب أن يحتوي $conn
 
 // -------------------------------
-// 4. تعيين الترميز إلى UTF-8
-// -------------------------------
-header('Content-Type: text/html; charset=utf-8');
-$conn->set_charset('utf8mb4');
-
-// -------------------------------
-// 5. متغيرات التحكم
+// 4. متغيرات التحكم
 // -------------------------------
 $error = '';
 $success = '';
 
 // -------------------------------
-// 6. تسجيل جديد
+// 5. تسجيل جديد
 // -------------------------------
 if (isset($_POST['register'])) {
     $fullname = trim($_POST['fullname']);
@@ -48,81 +42,63 @@ if (isset($_POST['register'])) {
         $error = "الرجاء إدخال كلمة المرور.";
     } else {
         // التحقق من وجود المستخدم
-        $stmt = $conn->prepare("SELECT id FROM users WHERE username = ? OR email = ?");
-        if ($stmt) {
-            $stmt->bind_param("ss", $username, $email);
-            $stmt->execute();
-            if ($stmt->get_result()->num_rows > 0) {
-                $error = "اسم المستخدم أو البريد مسجل مسبقًا.";
-            } else {
-                // إدخال المستخدم
-                $stmt_insert = $conn->prepare("INSERT INTO users (fullname, username, email, password, role) VALUES (?, ?, ?, ?, ?)");
-                if ($stmt_insert) {
-                    $stmt_insert->bind_param("sssss", $fullname, $username, $email, $password, $role);
-                    if ($stmt_insert->execute()) {
-                        $success = "تم التسجيل بنجاح! يمكنك الآن تسجيل الدخول.";
-                    } else {
-                        $error = "حدث خطأ أثناء التسجيل.";
-                    }
-                    $stmt_insert->close(); // ✅ إغلاق آمن
-                } else {
-                    $error = "فشل إعداد الاستعلام: " . $conn->error;
-                }
-            }
-            $stmt->close(); // ✅ إغلاق الاستعلام الأول
+        $sql = "SELECT id FROM users WHERE username = $1 OR email = $2";
+        $result = pg_query_params($conn, $sql, [$username, $email]);
+
+        if (pg_num_rows($result) > 0) {
+            $error = "اسم المستخدم أو البريد مسجل مسبقًا.";
         } else {
-            $error = "فشل إعداد الاستعلام: " . $conn->error;
+            // إدخال المستخدم
+            $sql_insert = "INSERT INTO users (fullname, username, email, password, role) VALUES ($1, $2, $3, $4, $5)";
+            $result_insert = pg_query_params($conn, $sql_insert, [$fullname, $username, $email, $password, $role]);
+
+            if ($result_insert) {
+                $success = "تم التسجيل بنجاح! يمكنك الآن تسجيل الدخول.";
+            } else {
+                $error = "حدث خطأ أثناء التسجيل.";
+            }
         }
     }
 }
 
 // -------------------------------
-// 7. تسجيل الدخول
+// 6. تسجيل الدخول
 // -------------------------------
 if (isset($_POST['login'])) {
     $username = trim($_POST['username']);
     $password = $_POST['password'];
 
-    $stmt = $conn->prepare("SELECT * FROM users WHERE username = ?");
-    if ($stmt) {
-        $stmt->bind_param("s", $username);
-        $stmt->execute();
-        $result = $stmt->get_result();
+    $sql = "SELECT * FROM users WHERE username = $1";
+    $result = pg_query_params($conn, $sql, [$username]);
 
-        if ($result->num_rows > 0) {
-            $user = $result->fetch_assoc();
-            if (password_verify($password, $user['password'])) {
-                $_SESSION['user_id'] = $user['id'];
-                $_SESSION['username'] = $user['username'];
-                $_SESSION['role'] = $user['role'];
-                $_SESSION['full_name'] = $user['fullname']; // ✅ يُستخدم لاحقًا
+    if (pg_num_rows($result) > 0) {
+        $user = pg_fetch_assoc($result);
+        if (password_verify($password, $user['password'])) {
+            $_SESSION['user_id'] = $user['id'];
+            $_SESSION['username'] = $user['username'];
+            $_SESSION['role'] = $user['role'];
+            $_SESSION['full_name'] = $user['fullname'];
 
-                if ($user['role'] === 'admin') {
-                    header("Location: admin/dashboard.php");
-                } else {
-                    header("Location: dashboard_user.php");
-                }
-                exit;
+            if ($user['role'] === 'admin') {
+                header("Location: admin/dashboard.php");
             } else {
-                $error = "كلمة المرور غير صحيحة.";
+                header("Location: dashboard_user.php");
             }
+            exit;
         } else {
-            $error = "اسم المستخدم غير موجود.";
+            $error = "كلمة المرور غير صحيحة.";
         }
-        $stmt->close(); // ✅ إغلاق آمن
     } else {
-        $error = "فشل إعداد الاستعلام: " . $conn->error;
+        $error = "اسم المستخدم غير موجود.";
     }
 }
 ?>
-
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>تسجيل الدخول - المحفظة الرقمية</title>
-    <!-- ✅ تأكد من عدم وجود مسافات زائدة -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <style>
@@ -166,7 +142,6 @@ if (isset($_POST['login'])) {
     </style>
 </head>
 <body>
-
     <div class="auth-container">
         <div class="logo">
             <i class="fas fa-wallet"></i>
@@ -235,7 +210,6 @@ if (isset($_POST['login'])) {
         </div>
     </div>
 
-    <!-- ✅ تأكد من عدم وجود مسافات زائدة في نهاية الرابط -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
