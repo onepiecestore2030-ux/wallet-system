@@ -1,6 +1,6 @@
 FROM ubuntu:22.04
 
-# تحديث النظام وتثبيت Apache وPHP
+# تحديث النظام وتثبيت Apache وPHP بدون تفاعل
 RUN apt-get update && apt-get install -y \
     apache2 \
     php \
