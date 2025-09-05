@@ -17,7 +17,7 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'customer') {
 // -------------------------------
 // 3. تضمين ملف الاتصال
 // -------------------------------
-require_once 'includes/db.php'; // يُعرف $conn
+require_once 'includes/db.php'; // يجب أن يحتوي $conn
 
 $user_id = $_SESSION['user_id'];
 $username = $_SESSION['username'];
@@ -27,15 +27,12 @@ $full_name = $_SESSION['full_name'];
 // 4. جلب رصيد المحفظة
 // -------------------------------
 $balance = '0.00';
-$stmt = $conn->prepare("SELECT balance FROM wallets WHERE user_id = ?");
-if ($stmt) {
-    $stmt->bind_param("i", $user_id);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    if ($row = $result->fetch_assoc()) {
-        $balance = number_format($row['balance'], 2);
-    }
-    $stmt->close();
+$sql = "SELECT balance FROM wallets WHERE user_id = $1";
+$result = pg_query_params($conn, $sql, [$user_id]);
+
+if ($result && pg_num_rows($result) > 0) {
+    $row = pg_fetch_assoc($result);
+    $balance = number_format($row['balance'], 2);
 }
 
 // -------------------------------
@@ -46,6 +43,7 @@ $deposit_message = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_deposit'])) {
     $amount = floatval($_POST['amount']);
     $payment_type = $_POST['payment_type'] ?? '';
+    $proof_image = '';
 
     if ($amount <= 0) {
         $deposit_message = '<div class="alert alert-danger">المبلغ يجب أن يكون أكبر من صفر.</div>';
@@ -53,7 +51,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_deposit'])) {
         $deposit_message = '<div class="alert alert-danger">نوع الدفع غير صحيح.</div>';
     } else {
         $transfer_type = $payment_type === 'bank' ? 'bank' : 'ajil';
-        $proof_image = '';
 
         // رفع صورة الإيصال (للحوالة البنكية فقط)
         if ($payment_type === 'bank') {
@@ -83,30 +80,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_deposit'])) {
 
         // حفظ الطلب في قاعدة البيانات
         if (!$deposit_message) {
-            $stmt = $conn->prepare("INSERT INTO wallet_transactions (user_id, amount, transfer_type, proof_image, status, requested_at) VALUES (?, ?, ?, ?, 'pending', NOW())");
-            if ($stmt) {
-                $stmt->bind_param("idss", $user_id, $amount, $transfer_type, $proof_image);
-                if ($stmt->execute()) {
-                    $deposit_message = '<div class="alert alert-success">تم إرسال طلبك بنجاح! سيتم مراجعته من قبل الإدارة.</div>';
-                } else {
-                    $deposit_message = '<div class="alert alert-danger">خطأ في حفظ الطلب. حاول لاحقاً.</div>';
-                }
-                $stmt->close();
+            $sql = "INSERT INTO wallet_transactions (user_id, amount, transfer_type, proof_image, status, requested_at) VALUES ($1, $2, $3, $4, 'pending', NOW())";
+            $result = pg_query_params($conn, $sql, [$user_id, $amount, $transfer_type, $proof_image]);
+
+            if ($result) {
+                $deposit_message = '<div class="alert alert-success">تم إرسال طلبك بنجاح! سيتم مراجعته من قبل الإدارة.</div>';
             } else {
-                $deposit_message = '<div class="alert alert-danger">فشل إعداد الاستعلام.</div>';
+                $deposit_message = '<div class="alert alert-danger">خطأ في حفظ الطلب. حاول لاحقاً.</div>';
             }
         }
     }
 }
 ?>
-
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
     <title>محفظتك - <?= htmlspecialchars($full_name) ?></title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <!-- ✅ تم إزالة المسافات الزائدة -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <style>
@@ -282,47 +273,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_deposit'])) {
                     </thead>
                     <tbody>
                         <?php
-                        $stmt = $conn->prepare("
-                            SELECT amount, transfer_type, status, requested_at 
-                            FROM wallet_transactions 
-                            WHERE user_id = ? 
-                            ORDER BY requested_at DESC
-                        ");
-                        if ($stmt) {
-                            $stmt->bind_param("i", $user_id);
-                            $stmt->execute();
-                            $result = $stmt->get_result();
+                        $sql = "SELECT amount, transfer_type, status, requested_at FROM wallet_transactions WHERE user_id = $1 ORDER BY requested_at DESC";
+                        $result = pg_query_params($conn, $sql, [$user_id]);
 
-                            if ($result->num_rows === 0) {
-                                echo '<tr><td colspan="4" class="text-muted">لا توجد طلبات حتى الآن.</td></tr>';
-                            } else {
-                                $total_amount = 0;
-                                while ($t = $result->fetch_assoc()) {
-                                    $type_label = $t['transfer_type'] === 'bank' ? 'حوالة بنكية' : 'دفع آجل';
-                                    $status_class = '';
-                                    if ($t['status'] === 'pending') $status_class = 'status-pending';
-                                    elseif ($t['status'] === 'approved') $status_class = 'status-approved';
-                                    elseif ($t['status'] === 'rejected') $status_class = 'status-rejected';
+                        if (!$result) {
+                            echo '<tr><td colspan="4" class="text-danger">خطأ في تحميل السجل.</td></tr>';
+                        } elseif (pg_num_rows($result) === 0) {
+                            echo '<tr><td colspan="4" class="text-muted">لا توجد طلبات حتى الآن.</td></tr>';
+                        } else {
+                            $total_amount = 0;
+                            while ($t = pg_fetch_assoc($result)) {
+                                $type_label = $t['transfer_type'] === 'bank' ? 'حوالة بنكية' : 'دفع آجل';
+                                $status_class = '';
+                                if ($t['status'] === 'pending') $status_class = 'status-pending';
+                                elseif ($t['status'] === 'approved') $status_class = 'status-approved';
+                                elseif ($t['status'] === 'rejected') $status_class = 'status-rejected';
 
-                                    $total_amount += $t['amount'];
+                                $total_amount += $t['amount'];
 
-                                    echo "<tr data-date='" . date('Y-m-d', strtotime($t['requested_at'])) . "' data-type='{$t['transfer_type']}'>
-                                        <td>{$t['amount']}</td>
-                                        <td>{$type_label}</td>
-                                        <td><span class='badge-status {$status_class}'>{$t['status']}</span></td>
-                                        <td>" . date('Y-m-d H:i', strtotime($t['requested_at'])) . "</td>
-                                    </tr>";
-                                }
-
-                                // صف الإجمالي
-                                echo "<tr class='fw-bold text-primary'>
-                                    <td colspan='1'></td>
-                                    <td colspan='3'>الإجمالي: <span id='totalDisplay'>{$total_amount}</span> ر.س</td>
+                                echo "<tr data-date='" . date('Y-m-d', strtotime($t['requested_at'])) . "' data-type='{$t['transfer_type']}'>
+                                    <td>{$t['amount']}</td>
+                                    <td>{$type_label}</td>
+                                    <td><span class='badge-status {$status_class}'>{$t['status']}</span></td>
+                                    <td>" . date('Y-m-d H:i', strtotime($t['requested_at'])) . "</td>
                                 </tr>";
                             }
-                            $stmt->close();
-                        } else {
-                            echo '<tr><td colspan="4" class="text-danger">خطأ في تحميل السجل.</td></tr>';
+
+                            // صف الإجمالي
+                            echo "<tr class='fw-bold text-primary'>
+                                <td colspan='1'></td>
+                                <td colspan='3'>الإجمالي: <span id='totalDisplay'>{$total_amount}</span> ر.س</td>
+                            </tr>";
                         }
                         ?>
                     </tbody>
@@ -412,7 +393,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_deposit'])) {
         document.addEventListener('DOMContentLoaded', toggleProofField);
     </script>
 
-    <!-- ✅ تم إزالة المسافة الزائدة -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
