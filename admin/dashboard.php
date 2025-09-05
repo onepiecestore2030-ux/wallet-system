@@ -17,7 +17,7 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
 // -------------------------------
 // 3. تضمين اتصال قاعدة البيانات
 // -------------------------------
-require_once '../includes/db.php'; // يستخدم $conn
+require_once '../includes/db.php'; // يجب أن يحتوي $conn
 
 // -------------------------------
 // 4. تحديد الصفحة
@@ -38,37 +38,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $note = $_POST['note'] ?? '';
 
     if ($action === 'approve') {
-        $stmt = $conn->prepare("UPDATE wallet_transactions SET status = 'approved' WHERE id = ? AND status = 'pending'");
-        $stmt->bind_param("i", $id);
-        if ($stmt->execute()) {
+        $sql = "UPDATE wallet_transactions SET status = 'approved' WHERE id = $1 AND status = 'pending'";
+        $result = pg_query_params($conn, $sql, [$id]);
+
+        if ($result) {
             // جلب بيانات المعاملة
-            $stmt2 = $conn->prepare("SELECT user_id, amount FROM wallet_transactions WHERE id = ?");
-            $stmt2->bind_param("i", $id);
-            $stmt2->execute();
-            $result = $stmt2->get_result();
-            if ($row = $result->fetch_assoc()) {
+            $sql2 = "SELECT user_id, amount FROM wallet_transactions WHERE id = $1";
+            $result2 = pg_query_params($conn, $sql2, [$id]);
+
+            if ($row = pg_fetch_assoc($result2)) {
                 // تحديث رصيد المحفظة
-                $update = $conn->prepare("UPDATE wallets SET balance = balance + ? WHERE user_id = ?");
-                $update->bind_param("di", $row['amount'], $row['user_id']);
-                $update->execute();
-                $update->close();
+                $sql_update = "UPDATE wallets SET balance = balance + $1 WHERE user_id = $2";
+                pg_query_params($conn, $sql_update, [$row['amount'], $row['user_id']]);
             }
-            $stmt2->close();
+
             echo json_encode(['success' => true]);
         } else {
             echo json_encode(['success' => false, 'message' => 'فشل التحديث']);
         }
-        $stmt->close();
         exit;
     } elseif ($action === 'reject') {
-        $stmt = $conn->prepare("UPDATE wallet_transactions SET status = 'rejected', admin_note = ? WHERE id = ? AND status = 'pending'");
-        $stmt->bind_param("si", $note, $id);
-        if ($stmt->execute()) {
+        $sql = "UPDATE wallet_transactions SET status = 'rejected', admin_note = $1 WHERE id = $2 AND status = 'pending'";
+        $result = pg_query_params($conn, $sql, [$note, $id]);
+
+        if ($result) {
             echo json_encode(['success' => true]);
         } else {
             echo json_encode(['success' => false, 'message' => 'فشل التحديث']);
         }
-        $stmt->close();
         exit;
     }
 }
@@ -79,7 +76,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta charset="UTF-8">
     <title>لوحة التحكم - المدير</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <!-- ✅ تم إزالة المسافات الزائدة -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -184,20 +180,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <div class="row">
                         <?php
                         // إجمالي الطلبات
-                        $stmt = $conn->query("SELECT COUNT(*) as total FROM wallet_transactions");
-                        $total = $stmt->fetch_assoc()['total'];
+                        $result = pg_query($conn, "SELECT COUNT(*) as total FROM wallet_transactions");
+                        $total = pg_fetch_assoc($result)['total'];
 
                         // طلبات معلقة
-                        $stmt = $conn->query("SELECT COUNT(*) as count FROM wallet_transactions WHERE status = 'pending'");
-                        $pending = $stmt->fetch_assoc()['count'];
+                        $result = pg_query($conn, "SELECT COUNT(*) as count FROM wallet_transactions WHERE status = 'pending'");
+                        $pending = pg_fetch_assoc($result)['count'];
 
                         // المبالغ المعتمدة
-                        $stmt = $conn->query("SELECT SUM(amount) as sum FROM wallet_transactions WHERE status = 'approved'");
-                        $approved_sum = $stmt->fetch_assoc()['sum'] ?? 0;
+                        $result = pg_query($conn, "SELECT SUM(amount) as sum FROM wallet_transactions WHERE status = 'approved'");
+                        $approved_sum = pg_fetch_assoc($result)['sum'] ?? 0;
 
                         // عدد العملاء
-                        $stmt = $conn->query("SELECT COUNT(*) as count FROM users WHERE role = 'customer'");
-                        $customers = $stmt->fetch_assoc()['count'];
+                        $result = pg_query($conn, "SELECT COUNT(*) as count FROM users WHERE role = 'customer'");
+                        $customers = pg_fetch_assoc($result)['count'];
                         ?>
 
                         <div class="col-md-6 col-lg-3">
@@ -264,30 +260,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             data: {
                                 labels: ['معلق', 'موافق عليه', 'مرفوض'],
                                 datasets: [{
-                                    data: [<?= $pending ?>, <?= $conn->query("SELECT COUNT(*) FROM wallet_transactions WHERE status='approved'")->fetch_assoc()['COUNT(*)'] ?>, <?= $conn->query("SELECT COUNT(*) FROM wallet_transactions WHERE status='rejected'")->fetch_assoc()['COUNT(*)'] ?>],
+                                    data: [<?= $pending ?>, <?= pg_fetch_assoc(pg_query($conn, "SELECT COUNT(*) FROM wallet_transactions WHERE status='approved'"))['count'] ?>, <?= pg_fetch_assoc(pg_query($conn, "SELECT COUNT(*) FROM wallet_transactions WHERE status='rejected'"))['count'] ?>],
                                     backgroundColor: ['#ffc107', '#28a745', '#dc3545']
                                 }]
                             }
                         });
 
                         // مخطط النوع
-                        fetch('?page=api&type=dash')
-                            .then(r => r.json())
-                            .then(data => {
-                                new Chart(document.getElementById('typeChart'), {
-                                    type: 'doughnut',
-                                    data: {
-                                        labels: ['حوالة بنكية', 'دفع آجل'],
-                                        datasets: [{
-                                            data: [
-                                                <?= $conn->query("SELECT COUNT(*) FROM wallet_transactions WHERE transfer_type='bank'")->fetch_assoc()['COUNT(*)'] ?>,
-                                                <?= $conn->query("SELECT COUNT(*) FROM wallet_transactions WHERE transfer_type='ajil'")->fetch_assoc()['COUNT(*)'] ?>
-                                            ],
-                                            backgroundColor: ['#007bff', '#6f42c1']
-                                        }]
-                                    }
-                                });
-                            });
+                        new Chart(document.getElementById('typeChart'), {
+                            type: 'doughnut',
+                            data: {
+                                labels: ['حوالة بنكية', 'دفع آجل'],
+                                datasets: [{
+                                    data: [
+                                        <?= pg_fetch_assoc(pg_query($conn, "SELECT COUNT(*) FROM wallet_transactions WHERE transfer_type='bank'"))['count'] ?>,
+                                        <?= pg_fetch_assoc(pg_query($conn, "SELECT COUNT(*) FROM wallet_transactions WHERE transfer_type='ajil'"))['count'] ?>
+                                    ],
+                                    backgroundColor: ['#007bff', '#6f42c1']
+                                }]
+                            }
+                        });
                     </script>
 
                 <!-- إدارة الطلبات -->
@@ -319,12 +311,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                             FROM wallet_transactions wt
                                             JOIN users u ON wt.user_id = u.id
                                             ORDER BY wt.requested_at DESC";
-                                    $result = $conn->query($sql);
+                                    $result = pg_query($conn, $sql);
 
-                                    if ($result->num_rows === 0): ?>
+                                    if (pg_num_rows($result) === 0): ?>
                                         <tr><td colspan="6" class="text-muted">لا توجد طلبات.</td></tr>
                                     <?php else:
-                                        while ($t = $result->fetch_assoc()):
+                                        while ($t = pg_fetch_assoc($result)):
                                             $type_label = $t['transfer_type'] === 'bank' ? 'حوالة بنكية' : 'دفع آجل';
                                             $status_class = $t['status'] === 'pending' ? 'status-pending' : ($t['status'] === 'approved' ? 'status-approved' : 'status-rejected');
                                             $status_text = $t['status'] === 'pending' ? 'معلق' : ($t['status'] === 'approved' ? 'موافق عليه' : 'مرفوض');
@@ -434,7 +426,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </div>
     </div>
 
-    <!-- ✅ تم إزالة المسافة الزائدة -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
