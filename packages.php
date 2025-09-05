@@ -23,55 +23,30 @@ if (!isset($_SESSION['user_id'])) {
 // -------------------------------
 // 4. تضمين اتصال قاعدة البيانات
 // -------------------------------
-require_once 'includes/db.php';
+require_once 'includes/db.php'; // يجب أن يحتوي $conn
 
 // -------------------------------
-// 5. دالة آمنة لإعادة الاتصال دائمًا
-// -------------------------------
-function getDBConnection() {
-    global $host, $username, $password, $dbname;
-
-    // ✅ أعد إنشاء الاتصال دائمًا (لا تعتمد على القديم)
-    static $conn = null;
-
-    if ($conn !== null) {
-        $conn->close(); // أغلق القديم
-    }
-
-    $conn = new mysqli($host, $username, $password, $dbname);
-
-    if ($conn->connect_error) {
-        die("فشل الاتصال بقاعدة البيانات: " . $conn->connect_error);
-    }
-
-    $conn->set_charset('utf8mb4');
-    return $conn;
-}
-
-// -------------------------------
-// 6. جلب بيانات المستخدم والرصيد
+// 5. جلب بيانات المستخدم والرصيد
 // -------------------------------
 $user_id = $_SESSION['user_id'];
 $full_name = $_SESSION['full_name'];
 $balance = 0;
 
-$conn = getDBConnection();
-$stmt = $conn->prepare("SELECT balance FROM wallets WHERE user_id = ?");
-$stmt->bind_param("i", $user_id);
-$stmt->execute();
-$result = $stmt->get_result();
-if ($row = $result->fetch_assoc()) {
+$sql = "SELECT balance FROM wallets WHERE user_id = $1";
+$result = pg_query_params($conn, $sql, [$user_id]);
+
+if ($result && pg_num_rows($result) > 0) {
+    $row = pg_fetch_assoc($result);
     $balance = $row['balance'];
 }
-$stmt->close();
 
 // -------------------------------
-// 7. تضمين API الميكروتيك
+// 6. تضمين API الميكروتيك
 // -------------------------------
 require_once 'includes/RouterosAPI.php';
 
 // -------------------------------
-// 8. إعدادات الاتصال بالميكروتيك
+// 7. إعدادات الاتصال بالميكروتيك
 // -------------------------------
 $API = new RouterosAPI();
 $API->port = 8729;
@@ -89,7 +64,7 @@ $hotspot_profiles = [];
 $message = '';
 
 // -------------------------------
-// 9. الاتصال بالميكروتيك
+// 8. الاتصال بالميكروتيك
 // -------------------------------
 if ($API->connect($mt_ip, $mt_user, $mt_pass)) {
     $connected = true;
@@ -111,27 +86,23 @@ if ($API->connect($mt_ip, $mt_user, $mt_pass)) {
                 </div>';
 }
 
-// ✅ ✅ إعادة الاتصال بقاعدة البيانات بعد الاتصال بالميكروتيك
-$conn = getDBConnection();
-
 // -------------------------------
-// 10. جلب باقات User Manager
+// 9. جلب باقات User Manager
 // -------------------------------
 $user_manager_packages = [];
-$stmt = $conn->prepare("SELECT * FROM packages WHERE status = 'active' ORDER BY sort_order");
-if ($stmt && $stmt->execute()) {
-    $result = $stmt->get_result();
-    while ($row = $result->fetch_assoc()) {
+$sql = "SELECT * FROM packages WHERE status = 'active' ORDER BY sort_order";
+$result = pg_query($conn, $sql);
+
+if ($result) {
+    while ($row = pg_fetch_assoc($result)) {
         $user_manager_packages[] = $row;
     }
-    $stmt->close();
 }
 
 // -------------------------------
-// 11. معالجة شراء باقة Hotspot
+// 10. معالجة شراء باقة Hotspot
 // -------------------------------
 if (isset($_POST['buy_hotspot']) && $connected) {
-    $conn = getDBConnection(); // ✅ اتصال جديد
     $profile_name = trim($_POST['profile_name']);
     $selected_profile = null;
 
@@ -149,18 +120,20 @@ if (isset($_POST['buy_hotspot']) && $connected) {
         if ($balance < $price) {
             $message = '<div class="alert alert-warning">رصيدك غير كافٍ لشراء هذه الباقة.</div>';
         } else {
-            $username = str_pad(rand(0, 999999), 6, '0', STR_PAD_LEFT);
-            $password = '';
+            // بدء المعاملة
+            pg_query($conn, "BEGIN");
 
-            $conn->begin_transaction();
             try {
                 // خصم من الرصيد
-                $stmt = $conn->prepare("UPDATE wallets SET balance = balance - ? WHERE user_id = ?");
-                $stmt->bind_param("di", $price, $user_id);
-                $stmt->execute();
-                $stmt->close();
+                $sql = "UPDATE wallets SET balance = balance - $1 WHERE user_id = $2";
+                $result = pg_query_params($conn, $sql, [$price, $user_id]);
+
+                if (!$result) throw new Exception("فشل تحديث الرصيد");
 
                 // إنشاء المستخدم في الميكروتيك
+                $username = str_pad(rand(0, 999999), 6, '0', STR_PAD_LEFT);
+                $password = '';
+
                 $API->comm('/ip/hotspot/user/add', [
                     'name'     => $username,
                     'password' => $password,
@@ -169,12 +142,13 @@ if (isset($_POST['buy_hotspot']) && $connected) {
                 ]);
 
                 // حفظ في المشتريات
-                $stmt = $conn->prepare("INSERT INTO purchases (user_id, package_name, username, password, price, package_type, purchased_at) VALUES (?, ?, ?, ?, ?, 'hotspot', NOW())");
-                $stmt->bind_param("isssd", $user_id, $selected_profile['name'], $username, $password, $price);
-                $stmt->execute();
-                $stmt->close();
+                $sql = "INSERT INTO purchases (user_id, package_name, username, password, price, package_type, purchased_at) VALUES ($1, $2, $3, $4, $5, 'hotspot', NOW())";
+                $result = pg_query_params($conn, $sql, [$user_id, $selected_profile['name'], $username, $password, $price]);
 
-                $conn->commit();
+                if (!$result) throw new Exception("فشل حفظ الشراء");
+
+                // تأكيد المعاملة
+                pg_query($conn, "COMMIT");
 
                 $_SESSION['last_purchase'] = [
                     'username' => $username,
@@ -187,7 +161,8 @@ if (isset($_POST['buy_hotspot']) && $connected) {
                 header("Location: purchase_success.php");
                 exit;
             } catch (Exception $e) {
-                $conn->rollback();
+                // التراجع
+                pg_query($conn, "ROLLBACK");
                 $message = '<div class="alert alert-danger">
                                 <strong>خطأ:</strong> ' . htmlspecialchars($e->getMessage()) . '
                             </div>';
@@ -197,17 +172,13 @@ if (isset($_POST['buy_hotspot']) && $connected) {
 }
 
 // -------------------------------
-// 12. معالجة شراء باقة User Manager
+// 11. معالجة شراء باقة User Manager
 // -------------------------------
 if (isset($_POST['buy_user_manager'])) {
-    $conn = getDBConnection(); // ✅ اتصال جديد
     $pkg_id = (int)$_POST['pkg_id'];
-    $stmt = $conn->prepare("SELECT * FROM packages WHERE id = ? AND status = 'active'");
-    $stmt->bind_param("i", $pkg_id);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    $package = $result->fetch_assoc();
-    $stmt->close();
+    $sql = "SELECT * FROM packages WHERE id = $1 AND status = 'active'";
+    $result = pg_query_params($conn, $sql, [$pkg_id]);
+    $package = pg_fetch_assoc($result);
 
     if (!$package) {
         $message = '<div class="alert alert-danger">الباقة غير موجودة.</div>';
@@ -215,21 +186,24 @@ if (isset($_POST['buy_user_manager'])) {
         if ($balance < $package['price']) {
             $message = '<div class="alert alert-warning">رصيدك غير كافٍ لشراء هذه الباقة.</div>';
         } else {
-            $conn->begin_transaction();
+            // بدء المعاملة
+            pg_query($conn, "BEGIN");
+
             try {
                 // خصم من الرصيد
-                $stmt = $conn->prepare("UPDATE wallets SET balance = balance - ? WHERE user_id = ?");
-                $stmt->bind_param("di", $package['price'], $user_id);
-                $stmt->execute();
-                $stmt->close();
+                $sql = "UPDATE wallets SET balance = balance - $1 WHERE user_id = $2";
+                $result = pg_query_params($conn, $sql, [$package['price'], $user_id]);
+
+                if (!$result) throw new Exception("فشل تحديث الرصيد");
 
                 // حفظ في المشتريات
-                $stmt = $conn->prepare("INSERT INTO purchases (user_id, package_name, username, password, price, package_type, purchased_at) VALUES (?, ?, NULL, NULL, ?, 'user_manager', NOW())");
-                $stmt->bind_param("isd", $user_id, $package['name'], $package['price']);
-                $stmt->execute();
-                $stmt->close();
+                $sql = "INSERT INTO purchases (user_id, package_name, username, password, price, package_type, purchased_at) VALUES ($1, $2, NULL, NULL, $3, 'user_manager', NOW())";
+                $result = pg_query_params($conn, $sql, [$user_id, $package['name'], $package['price']]);
 
-                $conn->commit();
+                if (!$result) throw new Exception("فشل حفظ الشراء");
+
+                // تأكيد المعاملة
+                pg_query($conn, "COMMIT");
 
                 $_SESSION['last_purchase'] = [
                     'username' => '',
@@ -242,7 +216,8 @@ if (isset($_POST['buy_user_manager'])) {
                 header("Location: purchase_success.php");
                 exit;
             } catch (Exception $e) {
-                $conn->rollback();
+                // التراجع
+                pg_query($conn, "ROLLBACK");
                 $message = '<div class="alert alert-danger">
                                 <strong>خطأ:</strong> ' . htmlspecialchars($e->getMessage()) . '
                             </div>';
@@ -252,18 +227,21 @@ if (isset($_POST['buy_user_manager'])) {
 }
 
 // -------------------------------
-// 13. جلب المشتريات مع فلاتر
+// 12. جلب المشتريات مع فلاتر
 // -------------------------------
 $filter_date = $_GET['date'] ?? 'all';
 $filter_type = $_GET['type'] ?? 'all';
 
 $date_query = '';
+$params = [$user_id];
+$param_count = 1;
+
 if ($filter_date === 'today') {
-    $date_query = " AND DATE(purchased_at) = CURDATE() ";
+    $date_query = " AND DATE(purchased_at) = CURRENT_DATE ";
 } elseif ($filter_date === 'week') {
-    $date_query = " AND YEARWEEK(purchased_at) = YEARWEEK(CURDATE()) ";
+    $date_query = " AND EXTRACT(WEEK FROM purchased_at) = EXTRACT(WEEK FROM CURRENT_DATE) AND EXTRACT(YEAR FROM purchased_at) = EXTRACT(YEAR FROM CURRENT_DATE) ";
 } elseif ($filter_date === 'month') {
-    $date_query = " AND YEAR(purchased_at) = YEAR(CURDATE()) AND MONTH(purchased_at) = MONTH(CURDATE()) ";
+    $date_query = " AND EXTRACT(MONTH FROM purchased_at) = EXTRACT(MONTH FROM CURRENT_DATE) AND EXTRACT(YEAR FROM purchased_at) = EXTRACT(YEAR FROM CURRENT_DATE) ";
 }
 
 $type_query = '';
@@ -274,21 +252,17 @@ if ($filter_type === 'hotspot') {
 }
 
 $purchases = [];
-$conn = getDBConnection();
-$stmt = $conn->prepare("
-    SELECT package_name, username, price, purchased_at, package_type 
-    FROM purchases 
-    WHERE user_id = ? $date_query $type_query
-    ORDER BY purchased_at DESC 
-    LIMIT 10
-");
-$stmt->bind_param("i", $user_id);
-$stmt->execute();
-$result = $stmt->get_result();
-while ($row = $result->fetch_assoc()) {
+$sql = "SELECT package_name, username, price, purchased_at, package_type 
+        FROM purchases 
+        WHERE user_id = $" . $param_count . $date_query . $type_query . "
+        ORDER BY purchased_at DESC 
+        LIMIT 10";
+
+$result = pg_query_params($conn, $sql, $params);
+
+while ($row = pg_fetch_assoc($result)) {
     $purchases[] = $row;
 }
-$stmt->close();
 ?>
 
 <!DOCTYPE html>
