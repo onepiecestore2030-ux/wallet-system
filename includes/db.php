@@ -1,20 +1,19 @@
 <?php
 // -------------------------------
-// اتصال قاعدة البيانات
+// اتصال بقاعدة بيانات PostgreSQL
 // -------------------------------
-$host = 'dpg-d2tkf0nfte5s73aba54g-a';
+$host = 'dpg-d2tkf0nfte5s73aba54g-a.oregon-postgres.render.com';
 $dbname = 'wallet_db_69lv';
-$username = 'wallet_db_69lv_user';
-$password = '47QlOGPiPeNtR9zO97KTqiT1jGWgTKd8'; // ⚠️ غيّرها إذا كانت مختلفة
+$user = 'wallet_db_69lv_user';
+$password = '47QlOGPiPeNtR9zO97KTqiT1jGWgTKd8'; // ⚠️ استبدل بالكلمة الحقيقية
 
-$conn = new mysqli($host, $username, $password, $dbname);
+// اتصال باستخدام pg_connect
+$connectionString = "host=$host dbname=$dbname user=$user password=$password port=5432";
+$conn = pg_connect($connectionString);
 
-// التحقق من الاتصال
-if ($conn->connect_error) {
-    die("فشل الاتصال: " . $conn->connect_error);
+if (!$conn) {
+    die("فشل الاتصال: " . pg_last_error());
 }
 
-// تعيين الترميز
-$conn->set_charset('utf8mb4');
-
+echo "✅ اتصال ناجح بقاعدة البيانات!";
 ?>
